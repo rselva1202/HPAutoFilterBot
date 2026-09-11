@@ -1,3 +1,18 @@
+import os
+from pathlib import Path
+
+PYROGRAM_WORKDIR = Path(
+    os.getenv(
+        "PYROGRAM_WORKDIR",
+        str(Path(__file__).resolve().parent)
+    )
+)
+
+PYROGRAM_WORKDIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
 import asyncio
 from datetime import datetime, timezone
 

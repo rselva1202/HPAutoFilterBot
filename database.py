@@ -1,13 +1,20 @@
+import os
 import sqlite3
 from pathlib import Path
 
-
-# ==================================================
-# DATABASE CONFIGURATION
-# ==================================================
-
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = BASE_DIR / "autofilter.db"
+
+DATABASE_PATH = Path(
+    os.getenv(
+        "SQLITE_PATH",
+        str(BASE_DIR / "autofilter.db")
+    )
+)
+
+DATABASE_PATH.parent.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
 # ==================================================

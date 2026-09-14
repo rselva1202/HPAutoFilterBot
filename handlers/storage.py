@@ -5,6 +5,20 @@ from database import add_file, file_exists
 from utils.metadata_parser import parse_metadata
 
 
+# ============================================================
+# STORAGE CHANNELS
+# ============================================================
+
+STORAGE_CHANNELS = {
+    -1003955875189,
+    -1003552500659,
+}
+
+
+# ============================================================
+# STORAGE HANDLER
+# ============================================================
+
 async def storage_handler(client, message):
 
     print("\n" + "=" * 50)
@@ -19,7 +33,7 @@ async def storage_handler(client, message):
     # CHECK STORAGE CHANNEL
     # --------------------------------------------------
 
-    if message.chat.id != STORAGE_CHANNEL:
+    if message.chat.id not in STORAGE_CHANNELS:
 
         print("⚠️ Not our storage channel.")
 
@@ -177,6 +191,7 @@ async def storage_handler(client, message):
         print()
         print("✅ INDEXED SUCCESSFULLY")
         print("File:", file_name)
+        print("Storage Channel:", message.chat.id)
 
     else:
 

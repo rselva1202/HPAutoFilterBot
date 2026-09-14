@@ -21,7 +21,6 @@ from database import (
     remove_scheduled_deletion
 )
 
-
 from pyrogram import Client, filters, idle
 from pyrogram.handlers import MessageHandler
 
@@ -32,6 +31,16 @@ from handlers.search import register_search_handler
 from handlers.file_delivery import register_file_delivery_handler
 from handlers.start import register_start_handler
 from handlers.ui import register_ui_handler
+
+
+# ==================================================
+# STORAGE CHANNELS
+# ==================================================
+
+STORAGE_CHANNELS = [
+    -1003955875189,
+    -1003552500659
+]
 
 
 # --------------------------------------------------
@@ -53,7 +62,7 @@ app = Client(
 app.add_handler(
     MessageHandler(
         storage_handler,
-        filters.channel & filters.chat(STORAGE_CHANNEL)
+        filters.channel & filters.chat(STORAGE_CHANNELS)
     )
 )
 
@@ -150,9 +159,9 @@ async def scheduled_file_deletion_worker(app):
         await asyncio.sleep(30)
 
 
-# --------------------------------------------------
+# ==================================================
 # START BOT
-# --------------------------------------------------
+# ==================================================
 
 async def main():
 
@@ -163,26 +172,52 @@ async def main():
 
     await app.start()
 
-
     asyncio.create_task(
-    scheduled_file_deletion_worker(app)
+        scheduled_file_deletion_worker(app)
     )
 
-    try:
+    # --------------------------------------------------
+    # CHECK BOTH STORAGE CHANNELS
+    # --------------------------------------------------
 
-        chat = await app.get_chat(STORAGE_CHANNEL)
+    storage_connected = 0
 
-        print()
-        print("✅ STORAGE CHANNEL CONNECTED")
-        print("Channel Name :", chat.title)
-        print("Channel ID   :", chat.id)
-        print("Configured ID:", STORAGE_CHANNEL)
+    for channel_id in STORAGE_CHANNELS:
 
-    except Exception as error:
+        try:
 
-        print()
-        print("❌ STORAGE CHANNEL ERROR")
-        print(error)
+            chat = await app.get_chat(channel_id)
+
+            print()
+            print("✅ STORAGE CHANNEL CONNECTED")
+            print("Channel Name :", chat.title)
+            print("Channel ID   :", chat.id)
+
+            storage_connected += 1
+
+        except Exception as error:
+
+            print()
+            print("❌ STORAGE CHANNEL ERROR")
+            print("Channel ID   :", channel_id)
+            print(error)
+
+    # --------------------------------------------------
+    # STORAGE CONNECTION RESULT
+    # --------------------------------------------------
+
+    print()
+    print(
+        f"📦 Storage channels connected: "
+        f"{storage_connected}/{len(STORAGE_CHANNELS)}"
+    )
+
+    if storage_connected == 0:
+
+        print("❌ No storage channels connected.")
+
+        await app.stop()
+
         return
 
     print()

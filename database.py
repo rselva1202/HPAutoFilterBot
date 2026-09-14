@@ -227,16 +227,14 @@ def file_exists(file_id):
 
 def search_files(keyword):
 
+    import re
+
     keyword = keyword.strip()
 
     if not keyword:
         return []
 
-    # --------------------------------------------------
-    # CHECK IF SEARCH CONTAINS A YEAR
-    # --------------------------------------------------
-
-    import re
+    keyword = re.sub(r"\s+", " ", keyword)
 
     year_match = re.search(
         r"\b(19\d{2}|20\d{2})\b",
@@ -246,99 +244,157 @@ def search_files(keyword):
     year = None
 
     if year_match:
-
         year = int(year_match.group(1))
-
         title_keyword = re.sub(
             r"\b(19\d{2}|20\d{2})\b",
             "",
             keyword
         ).strip()
-
     else:
-
         title_keyword = keyword
 
-
-    # --------------------------------------------------
-    # SEARCH WITH YEAR
-    # --------------------------------------------------
+    search_pattern = f"%{title_keyword}%"
 
     if year:
-
-        search_pattern = f"%{title_keyword}%"
-
-        cursor.execute("""
-        SELECT
-            id,
-            file_id,
-            file_name,
-            caption,
-            file_type,
-            file_size,
-            message_id,
-            storage_channel,
-            created_at,
-            title,
-            year,
-            language,
-            quality,
-            season,
-            episode
-        FROM files
-        WHERE
-            (
-                title LIKE ?
-                OR file_name LIKE ?
-                OR caption LIKE ?
-            )
-            AND year = ?
-        ORDER BY id DESC
-        """, (
-            search_pattern,
-            search_pattern,
-            search_pattern,
-            year
-        ))
-
-    # --------------------------------------------------
-    # SEARCH WITHOUT YEAR
-    # --------------------------------------------------
-
+        if title_keyword:
+            cursor.execute("""
+                SELECT
+                    id,
+                    file_id,
+                    file_name,
+                    caption,
+                    file_type,
+                    file_size,
+                    message_id,
+                    storage_channel,
+                    created_at,
+                    title,
+                    year,
+                    language,
+                    quality,
+                    season,
+                    episode
+                FROM files
+                WHERE
+                    year = ?
+                    AND (
+                        title LIKE ? COLLATE NOCASE
+                        OR file_name LIKE ? COLLATE NOCASE
+                    )
+                ORDER BY
+                    CASE
+                        WHEN lower(trim(title)) = lower(trim(?))
+                            THEN 0
+                        WHEN title LIKE ? COLLATE NOCASE
+                            THEN 1
+                        WHEN file_name LIKE ? COLLATE NOCASE
+                            THEN 2
+                        ELSE 3
+                    END,
+                    id DESC
+            """, (
+                year,
+                search_pattern,
+                search_pattern,
+                title_keyword,
+                search_pattern,
+                search_pattern
+            ))
+        else:
+            cursor.execute("""
+                SELECT
+                    id,
+                    file_id,
+                    file_name,
+                    caption,
+                    file_type,
+                    file_size,
+                    message_id,
+                    storage_channel,
+                    created_at,
+                    title,
+                    year,
+                    language,
+                    quality,
+                    season,
+                    episode
+                FROM files
+                WHERE year = ?
+                ORDER BY id DESC
+            """, (year,))
     else:
-
-        search_pattern = f"%{keyword}%"
-
         cursor.execute("""
-        SELECT
-            id,
-            file_id,
-            file_name,
-            caption,
-            file_type,
-            file_size,
-            message_id,
-            storage_channel,
-            created_at,
-            title,
-            year,
-            language,
-            quality,
-            season,
-            episode
-        FROM files
-        WHERE
-            title LIKE ?
-            OR file_name LIKE ?
-            OR caption LIKE ?
-        ORDER BY id DESC
+            SELECT
+                id,
+                file_id,
+                file_name,
+                caption,
+                file_type,
+                file_size,
+                message_id,
+                storage_channel,
+                created_at,
+                title,
+                year,
+                language,
+                quality,
+                season,
+                episode
+            FROM files
+            WHERE
+                title LIKE ? COLLATE NOCASE
+                OR file_name LIKE ? COLLATE NOCASE
+            ORDER BY
+                CASE
+                    WHEN lower(trim(title)) = lower(trim(?))
+                        THEN 0
+                    WHEN title LIKE ? COLLATE NOCASE
+                        THEN 1
+                    WHEN file_name LIKE ? COLLATE NOCASE
+                        THEN 2
+                    ELSE 3
+                END,
+                id DESC
         """, (
             search_pattern,
+            search_pattern,
+            title_keyword,
             search_pattern,
             search_pattern
         ))
 
-    return cursor.fetchall()
+    results = cursor.fetchall()
+
+    # Safety de-duplication by the actual Telegram storage message.
+    # Different releases/qualities remain separate when they are different
+    # Telegram messages.
+    unique_results = []
+    seen_messages = set()
+
+    for row in results:
+        storage_channel = row[7]
+        message_id = row[6]
+
+        if storage_channel is not None and message_id is not None:
+            try:
+                unique_key = (
+                    int(storage_channel),
+                    int(message_id)
+                )
+            except (TypeError, ValueError):
+                unique_key = (
+                    str(storage_channel),
+                    str(message_id)
+                )
+
+            if unique_key in seen_messages:
+                continue
+
+            seen_messages.add(unique_key)
+
+        unique_results.append(row)
+
+    return unique_results
 
 
 # ==================================================
@@ -657,6 +713,73 @@ def remove_user_access(user_id):
     ))
 
     connection.commit()
+
+
+# ==================================================
+# GRANT USER ACCESS
+# ==================================================
+
+def grant_user_access(user_id, verified_at, access_until):
+    """
+    Grant the user free file access until access_until.
+
+    verified_at is accepted for compatibility with the start handler.
+    The current user_access table stores the expiry as unlocked_until.
+    """
+
+    try:
+        cursor.execute("""
+            INSERT INTO user_access (
+                user_id,
+                unlocked_until
+            )
+            VALUES (?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                unlocked_until = excluded.unlocked_until
+        """, (
+            int(user_id),
+            access_until
+        ))
+
+        connection.commit()
+
+        print(
+            f"✅ 8-hour access granted to user {user_id} "
+            f"until {access_until}"
+        )
+
+        return True
+
+    except Exception as error:
+        print("❌ Error granting user access:", error)
+        return False
+
+
+# ==================================================
+# CHECK ACTIVE USER ACCESS
+# ==================================================
+
+def has_active_user_access(user_id):
+
+    from datetime import datetime, timezone
+
+    try:
+        unlocked_until = get_user_access(user_id)
+
+        if not unlocked_until:
+            return False
+
+        expiry = datetime.fromisoformat(str(unlocked_until))
+
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+
+        return datetime.now(timezone.utc) < expiry
+
+    except Exception as error:
+        print("❌ Error checking user access:", error)
+        return False
 
 
 # ==================================================

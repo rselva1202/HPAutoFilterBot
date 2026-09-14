@@ -4,7 +4,8 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database import (
     get_file_by_db_id,
-    schedule_file_deletion
+    schedule_file_deletion,
+    has_active_user_access
 )
 
 from utils.access_tokens import generate_access_token
@@ -80,7 +81,7 @@ async def deliver_file(client, user_id, db_id):
         ).isoformat()
 
         # --------------------------------------------------
-        # SAVE DELETE TASK TO SQLITE
+        # SAVE FILE DELETE TASK
         # --------------------------------------------------
 
         scheduled = schedule_file_deletion(
@@ -102,7 +103,7 @@ async def deliver_file(client, user_id, db_id):
 
             print(
                 "⚠️ WARNING: "
-                "Could not save deletion schedule."
+                "Could not save file deletion schedule."
             )
 
         # --------------------------------------------------
@@ -114,7 +115,11 @@ async def deliver_file(client, user_id, db_id):
             f"{file_name} → {user_id}"
         )
 
-        return True, file_name
+        # Return BOTH file name and delivered message ID
+        return True, {
+            "file_name": file_name,
+            "message_id": delivered_message.id
+        }
 
     except Exception as error:
 
@@ -129,6 +134,53 @@ async def deliver_file(client, user_id, db_id):
 # FILE DELIVERY CALLBACK
 # ==================================================
 
+async def _delete_message_after_minute(chat_id, message_id):
+    from datetime import datetime, timedelta, timezone
+
+    delete_at = (
+        datetime.now(timezone.utc)
+        + timedelta(minutes=1)
+    ).isoformat()
+
+    schedule_file_deletion(
+        chat_id=chat_id,
+        message_id=message_id,
+        delete_at=delete_at
+    )
+
+
+async def _send_file_deletion_alert(client, chat_id):
+    """Send the 15-minute deletion notice and schedule it for deletion too."""
+    from datetime import datetime, timedelta, timezone
+
+    alert = await client.send_message(
+        chat_id=chat_id,
+        text=(
+            "✅ **File sent successfully!**\n\n"
+            "⏱️ This file will be automatically deleted from this chat "
+            "after 15 minutes.\n\n"
+            "So Kindly Share This File To Your Friends Or Saved Message..."
+        )
+    )
+
+    delete_at = (
+        datetime.now(timezone.utc)
+        + timedelta(minutes=15)
+    ).isoformat()
+
+    schedule_file_deletion(
+        chat_id=chat_id,
+        message_id=alert.id,
+        delete_at=delete_at
+    )
+
+    return alert
+
+
+# ==================================================
+# FILE DELIVERY CALLBACK
+# ==================================================
+
 async def get_file_handler(client, callback_query):
 
     data = callback_query.data
@@ -136,145 +188,98 @@ async def get_file_handler(client, callback_query):
     if not data.startswith("getfile:"):
         return
 
-    # --------------------------------------------------
-    # GET DATABASE ID
-    # --------------------------------------------------
-
     try:
-
-        db_id = int(
-            data.split(":", 1)[1]
-        )
-
+        db_id = int(data.split(":", 1)[1])
     except (ValueError, IndexError):
-
         await callback_query.answer(
             "❌ Invalid file request.",
             show_alert=True
         )
-
         return
-
-    # --------------------------------------------------
-    # CHECK FILE
-    # --------------------------------------------------
 
     file_data = get_file_by_db_id(db_id)
 
     if not file_data:
-
         await callback_query.answer(
             "❌ File not found.",
             show_alert=True
         )
-
         return
-
-    # --------------------------------------------------
-    # USER
-    # --------------------------------------------------
 
     user_id = callback_query.from_user.id
 
     # --------------------------------------------------
-    # CREATE NEW ACCESS TOKEN
+    # ALREADY VERIFIED -> SEND DIRECTLY
+    # --------------------------------------------------
+
+    if has_active_user_access(user_id):
+
+        success, result = await deliver_file(
+            client=client,
+            user_id=user_id,
+            db_id=db_id
+        )
+
+        if success:
+            await _send_file_deletion_alert(
+                client=client,
+                chat_id=user_id
+            )
+
+            await callback_query.answer(
+                "✅ File sent!",
+                show_alert=False
+            )
+        else:
+            await callback_query.answer(
+                "❌ Could not send this file.",
+                show_alert=True
+            )
+
+        return
+
+    # --------------------------------------------------
+    # NOT VERIFIED -> CREATE VERIFICATION LINK
     # --------------------------------------------------
 
     try:
-
         token = generate_access_token(
             user_id=user_id,
             file_db_id=db_id
         )
-
-        print(
-            f"🔑 New access token generated "
-            f"for user {user_id}, file {db_id}"
-        )
-
     except Exception as error:
-
-        print(
-            "❌ TOKEN GENERATION ERROR:",
-            error
-        )
-
+        print("❌ TOKEN GENERATION ERROR:", error)
         await callback_query.answer(
-            "❌ Could not create access link.",
+            "❌ Could not create verification link.",
             show_alert=True
         )
-
         return
 
-    # --------------------------------------------------
-    # GET BOT USERNAME
-    # --------------------------------------------------
-
     try:
-
         bot_info = await client.get_me()
-
         bot_username = bot_info.username
 
         if not bot_username:
-
-            raise ValueError(
-                "Bot username is not available."
-            )
-
-    except Exception as error:
-
-        print(
-            "❌ BOT USERNAME ERROR:",
-            error
-        )
-
-        await callback_query.answer(
-            "❌ Bot configuration error.",
-            show_alert=True
-        )
-
-        return
-
-    # --------------------------------------------------
-    # CREATE NEW AROLINKS URL
-    # --------------------------------------------------
-
-    try:
+            raise ValueError("Bot username is not available.")
 
         short_url = create_access_link(
             bot_username=bot_username,
             token=token
         )
 
-        print(
-            f"🔗 New AroLinks URL created "
-            f"for user {user_id}, file {db_id}"
-        )
-
     except Exception as error:
-
-        print(
-            "❌ AROLINKS ERROR:",
-            error
-        )
-
+        print("❌ AROLINKS ERROR:", error)
         await callback_query.answer(
-            "❌ Could not create access link.",
+            "❌ Could not create verification link.",
             show_alert=True
         )
-
         return
-
-    # --------------------------------------------------
-    # SHOW AROLINKS BUTTON
-    # --------------------------------------------------
 
     keyboard = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "🔐 Get File",
+                    "🔐 VERIFY",
                     url=short_url
                 )
             ]
@@ -283,29 +288,25 @@ async def get_file_handler(client, callback_query):
 
     file_name = file_data[2]
 
-    await callback_query.message.reply_text(
-
-        "🔐 **Complete the access step first.**\n\n"
-
+    verification_message = await callback_query.message.reply_text(
+        "🔐 **Verify for 8 hours and get any files for free.**\n\n"
         f"📁 **{file_name}**\n\n"
-
-        "After completing the access step, "
-        "Telegram will automatically open "
-        "the file access.",
-
+        "Complete the verification once. After that, you can get any files "
+        "without verifying again for the next **8 hours**.",
         reply_markup=keyboard
     )
 
-    # --------------------------------------------------
-    # ANSWER CALLBACK
-    # --------------------------------------------------
+    await _delete_message_after_minute(
+        chat_id=callback_query.message.chat.id,
+        message_id=verification_message.id
+    )
 
     await callback_query.answer(
-        "🔐 Access link created!"
+        "🔐 Verification required."
     )
 
     print(
-        f"🔗 AroLinks link created for "
+        f"🔗 Verification link created for "
         f"user {user_id}, file {db_id}"
     )
 
